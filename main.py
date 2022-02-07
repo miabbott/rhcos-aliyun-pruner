@@ -29,11 +29,16 @@ from alibabacloud_ecs20140526.models import DescribeImagesRequest, \
                                             TagResourcesRequestTag
 from alibabacloud_ecs20140526.client import Client
 from alibabacloud_tea_openapi.models import Config
-
+from urllib.request import urlopen
 
 OPENSHIFT_INSTALL_GIT = "https://github.com/openshift/installer"
 REDIRECTOR_URL = "https://rhcos-redirector.apps.art.xq1c.p1.openshiftapps.com/art/storage/releases/"
 
+FIRSTRELEASE = {}
+FIRSTRELEASE['aarch64'] = 0
+FIRSTRELEASE['ppc64le'] = 0
+FIRSTRELEASE['s390x'] = 0
+FIRSTRELEASE['x86_64'] = {'4.10': '410842021120118210', '4.11': '411842022020718390'}
 
 # creates an Aliyun client for a region
 def create_client(region_id):
@@ -43,8 +48,28 @@ def create_client(region_id):
 
     client = Client(config)
     return client
+# Get all images in builds.json and check the build meta.json to see
+# if we had an aliyun artifact created
+def parse_relase(release):
+    releases = []
+    jsonurl = urlopen("%srhcos-%s/builds.json" % (REDIRECTOR_URL, release))
+    buildjson = json.loads(jsonurl.read())
 
+    for build in (buildjson['builds']):
 
+        arch = build['arches'][0]
+        buildid = build['id']
+        buildid_int = int((buildid.replace('.','')).replace('-',''))
+        # Look only for builds after the aliyun inclusion
+        # TODO: we can improve it keeping a record for the build we already checked
+        if buildid_int >= int(FIRSTRELEASE[arch][release][0]):
+            metajsonURL = ("%srhcos-%s/%s/%s/meta.json" % (REDIRECTOR_URL, release, buildid ,arch))
+            jsonurl = urlopen(metajsonURL)
+            metajson = json.loads(jsonurl.read())
+            if 'aliyun' in metajson:
+                releases.append(buildid)
+                # We can also return the ImageId/region via metajson['aliyun']
+    return releases
 # tag an image with `bootimage:true`
 def tag_image(region_id, image_id):
     tag_key = "bootimage"
@@ -158,9 +183,12 @@ def main():
 
     ### testing functions
     #bootimages = parse_openshift_installer(args.release)
+    releases = (parse_relase(args.release))
     #tag_image(region_id="us-east-1", image_id="m-0xi47nhv1zat67he9n4j")
     #desc_resp = get_image_info("us-west-1", "m-rj947nhv1zas8vulsa3p")
     #delete_image("us-west-1", "m-rj947nhv1zas8vulsa3p")
+    # test values
+    tag_image(region_id="us-east-1", image_id="m-0xi47nhv1zat67he9n4j")
 
 
 if __name__ == "__main__":
