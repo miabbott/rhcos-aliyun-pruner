@@ -41,9 +41,11 @@ def create_client(region_id):
 
 
 # tag an image with `bootimage:true`
-def tag_image(region_id, image_id):
-    tag_key = "bootimage"
-    tag_value = "true"
+def tag_image(region_id, image_id, tag_key=None, tag_value=None):
+    if tag_key is None:
+        tag_key = "bootimage"
+    if tag_value is None:
+        tag_value = "false"
 
     bootimage_tag = TagResourcesRequestTag(key=tag_key, value=tag_value)
     client = create_client(region_id)
@@ -99,8 +101,20 @@ def main():
 
     bootimages = parse_openshift_installer(args.release)
 
-    # test values
-    tag_image(region_id="us-east-1", image_id="m-0xi47nhv1zat67he9n4j")
+    # tag all bootimages with "true"
+    for build in bootimages:
+        region_id = build['region_id']
+        image_id = build['region_id']['image']
+        tag_image(region_id, image_id, tag_value="true")
+
+    # TODO: iterate over all builds.json and tag them with false
+    #
+    # pseudo code:
+    #   for build in build_json:
+    #       if build_id in bootimages:
+    #           tag_image(region_id, image_id, tag_value=truie)
+    #       else:
+    #           tag_image(region_id, image_id, tag_value=false)
 
 
 if __name__ == "__main__":
