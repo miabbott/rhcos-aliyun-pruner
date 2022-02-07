@@ -9,17 +9,22 @@
 # the docs for this SDK are not great.
 #
 #  https://github.com/aliyun/credentials-python/blob/master/alibabacloud_credentials/providers.py#L356-L363
+#
+# See also the OpenAPI explorer for making sense of the API/SDK
+#  - https://api.aliyun.com/#/?product=Ecs
 
 import argparse
 import git
 import json
 import logging
 import os
-import tempfile
 import shutil
+import tempfile
+
 
 from alibabacloud_credentials.client import Client as CredClient
 from alibabacloud_ecs20140526.models import DescribeImagesRequest, \
+                                            DeleteImageRequest, \
                                             TagResourcesRequest, \
                                             TagResourcesRequestTag
 from alibabacloud_ecs20140526.client import Client
@@ -51,6 +56,59 @@ def tag_image(region_id, image_id):
     # creating a client with a region_id set doesn't propogate to the request for some reason
     tag_request.region_id = region_id
     tag_response = client.tag_resources(tag_request)
+
+
+# utility function to get info about an image
+def get_image_info(region_id, image_id):
+    describe_req = DescribeImagesRequest()
+    describe_req.image_id = image_id
+    describe_req.region_id  = region_id
+
+    client = create_client(region_id)
+    logging.debug(f"Sending DescribeImages request for {image_id}")
+    describe_resp = client.describe_images(describe_req)
+
+    return describe_resp
+
+
+# will delete an image as long as the check_tag_key does not equal check_tag_value
+def delete_image(region_id, image_id, check_tag_key=None, check_tag_value=None):
+    if check_tag_key is None:
+        check_tag_key = "bootimage"
+    if check_tag_value is None:
+        check_tag_value = "true"
+
+    logging.debug(f"Getting info for {image_id}")
+
+
+    image_info = get_image_info(region_id, image_id)
+    # image_info is a DescribeImagesResponse object
+    #
+    # DescribeImagesResponse
+    #   -> body (DescribeImagesResponseBody)
+    #      -> images (DescribeImagesResponseBodyImages)
+    #          -> image (list of DescribeImagesResponseBodyImagesImage)
+    #             -> tags (DescribeImagesResponseBodyImagesImageTags)
+    #                -> tag (list of DescribeImagesResponseBodyImagesImageTagsTag)
+    #
+    # there should only be a single item in the list since image IDs are unique
+    # so just iterate over the tags
+    for tag in image_info.body.images.image[0].tags.tag:
+        if tag.tag_key == check_tag_key and tag.tag_value == check_tag_value:
+            logging.warning(f"{image_id} is tagged with {check_tag_key}={check_tag_value}; will not delete")
+            return
+
+    logging.debug(f"Did not find any tags preventing deletion for {image_id}")
+    delete_req = DeleteImageRequest()
+    delete_req.image_id = image_id
+    delete_req.region_id = region_id
+
+    logging.debug(f"Created DeleteImages request for {image_id}")
+    print(delete_req)
+    # TODO: actual calls to do the deletion are commented out until we have
+    # better support for `--dry-run`
+    #client = create_client(region_id)
+    #delete_resp = client.delete_image(delete_req)
 
 
 # given an OCP version string, checkout the repo, find the aliyun images in
@@ -97,10 +155,12 @@ def main():
     if args.debug:
         logging.basicConfig(level=logging.DEBUG)
 
-    bootimages = parse_openshift_installer(args.release)
 
-    # test values
-    tag_image(region_id="us-east-1", image_id="m-0xi47nhv1zat67he9n4j")
+    ### testing functions
+    #bootimages = parse_openshift_installer(args.release)
+    #tag_image(region_id="us-east-1", image_id="m-0xi47nhv1zat67he9n4j")
+    #desc_resp = get_image_info("us-west-1", "m-rj947nhv1zas8vulsa3p")
+    #delete_image("us-west-1", "m-rj947nhv1zas8vulsa3p")
 
 
 if __name__ == "__main__":
