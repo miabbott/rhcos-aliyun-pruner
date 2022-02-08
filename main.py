@@ -23,12 +23,12 @@ import tempfile
 
 
 from alibabacloud_credentials.client import Client as CredClient
-from alibabacloud_ecs20140526.models import DescribeImagesRequest, \
-                                            DeleteImageRequest, \
+from alibabacloud_ecs20140526.models import DeleteImageRequest, \
                                             TagResourcesRequest, \
                                             TagResourcesRequestTag
 from alibabacloud_ecs20140526.client import Client
 from alibabacloud_tea_openapi.models import Config
+from aliyunsdkecs.request.v20140526.DescribeImagesRequest import DescribeImagesRequest
 from urllib.request import urlopen
 
 OPENSHIFT_INSTALL_GIT = "https://github.com/openshift/installer"
@@ -48,10 +48,34 @@ def create_client(region_id):
 
     client = Client(config)
     return client
+
+def get_images_not_tagged(bootimages):
+    request = DescribeImagesRequest()
+    nottagged = []
+
+    for bootimage in bootimages:
+        for region in bootimages[bootimage]:
+            imageid = bootimages[bootimage][region]['image']
+            request.set_ImageId(imageid)
+            client = create_client(region)
+            response = client.do_action_with_exception(request)
+            response = json.loads(response.decode("utf-8"))
+            for image in response['Images']['Image']:
+                tagfound = False
+                for tag in image['Tags']['Tag']:
+                    if tag['TagKey'] == 'bootimage' and \
+                      (tag['TagValue'] == 'true' or tag['TagValue'] == 'false'):
+                        tagfound = True
+                        break
+                if tagfound is False:
+                    nottagged.append({'region_id': region, 'image_id': image['ImageId']})
+    return nottagged
+
+
 # Get all images in builds.json and check the build meta.json to see
 # if we had an aliyun artifact created
-def parse_relase(release):
-    releases = []
+def parse_release(release):
+    releases = {}
     jsonurl = urlopen("%srhcos-%s/builds.json" % (REDIRECTOR_URL, release))
     buildjson = json.loads(jsonurl.read())
 
@@ -67,8 +91,10 @@ def parse_relase(release):
             jsonurl = urlopen(metajsonURL)
             metajson = json.loads(jsonurl.read())
             if 'aliyun' in metajson:
-                releases.append(buildid)
-                # We can also return the ImageId/region via metajson['aliyun']
+                # Create the same output we have for bootimages
+                releases[buildid] = {}
+                for entry in  metajson['aliyun']:
+                    releases[buildid][entry['name']] = {'image':entry['id']}
     return releases
 # tag an image with `bootimage:true`
 def tag_image(region_id, image_id):
@@ -183,7 +209,8 @@ def main():
 
     ### testing functions
     #bootimages = parse_openshift_installer(args.release)
-    releases = (parse_relase(args.release))
+    releases = (parse_release(args.release))
+    images = get_images_not_tagged(releases)
     #tag_image(region_id="us-east-1", image_id="m-0xi47nhv1zat67he9n4j")
     #desc_resp = get_image_info("us-west-1", "m-rj947nhv1zas8vulsa3p")
     #delete_image("us-west-1", "m-rj947nhv1zas8vulsa3p")
