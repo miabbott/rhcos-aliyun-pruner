@@ -16,7 +16,8 @@ d. delete images with `bootimage=false`
 
 ## TODO
 
-1. Change API calls to use OpenAPI Explorer suggestions
+~~1. Change API calls to use OpenAPI Explorer suggestions~~
+1. Improve cloud API requests to use try...except... model
 2. Enhance tagging function to record images with `bootimage=false` in local file
 3. Enhance delete function to look for local file from #2
 4. Change default operation for script to be dry-run; add flag to indicate destruction of images?
