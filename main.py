@@ -13,6 +13,7 @@ import json
 import logging
 import os
 import shutil
+import sys
 import tempfile
 from urllib.request import urlopen
 
@@ -61,7 +62,12 @@ def get_images_not_tagged(bootimages):
             request.set_ImageId(imageid)
             request.set_protocol_type('https')
             client = create_client(region)
-            response = client.do_action_with_exception(request)
+            try:
+                response = client.do_action_with_exception(request)
+            except (ClientException, ServerException) as e:
+                logging.error("Unable to describe {}: {}".format(imageid, e))
+                sys.exit(1)
+
             response = json.loads(response.decode("utf-8"))
             for image in response['Images']['Image']:
                 tagfound = False
@@ -129,7 +135,11 @@ def tag_image(region_id, image_id, tag_key=None, tag_value=None):
         }
     ])
 
-    tag_resp = client.do_action_with_exception(tag_request)
+    try:
+        tag_resp = client.do_action_with_exception(tag_request)
+    except (ClientException, ServerException) as e:
+        logging.error("Unable to tag {}: {}".format(image_id, e))
+        sys.exit(1)
 
     return json.loads(tag_resp.decode("utf-8"))
 
@@ -177,7 +187,11 @@ def delete_image(region_id, image_id, check_tag_key=None, check_tag_value=None):
     logging.warning(f"Deleting {image_id} in {region_id}")
     # TODO: actual calls to do the deletion are commented out until we have
     # better support for `--dry-run`
-    # delete_resp = client.do_action_with_exception(delete_req)
+    # try:
+    #     delete_resp = client.do_action_with_exception(delete_req)
+    # except (ClientException, ServerException) as e:
+    #     logging.error("Unable to delete {}: {}".format(image_id, e))
+    #     sys.exit(1)
     # return json.loads(delete_resp.decode("utf-8"))
 
 
