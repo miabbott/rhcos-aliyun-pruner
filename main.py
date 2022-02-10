@@ -63,6 +63,7 @@ def get_images_not_tagged(bootimages):
             request.set_ImageId(imageid)
             request.set_protocol_type('https')
             client = create_client(region)
+            logging.debug(f"Getting image info for {imageid} in {region}")
             try:
                 response = client.do_action_with_exception(request)
             except (ClientException, ServerException) as e:
@@ -90,11 +91,11 @@ def get_images_not_tagged(bootimages):
 # Returns a dict keyed off of build ID that contains {region_id: image_id} pairs
 def parse_release(release):
     releases = {}
+    logging.debug(f"Getting all builds for RHCOS {release}")
     jsonurl = urlopen("%srhcos-%s/builds.json" % (REDIRECTOR_URL, release))
     buildjson = json.loads(jsonurl.read())
 
     for build in (buildjson['builds']):
-
         arch = build['arches'][0]
         buildid = build['id']
         buildid_int = int((buildid.replace('.','')).replace('-',''))
@@ -102,10 +103,12 @@ def parse_release(release):
         # TODO: we can improve it keeping a record for the build we already checked
         if buildid_int >= int(FIRSTRELEASE[arch][release][0]):
             metajsonURL = ("%srhcos-%s/%s/%s/meta.json" % (REDIRECTOR_URL, release, buildid ,arch))
+            logging.debug(f"Checking {buildid} for Aliyun uploads")
             jsonurl = urlopen(metajsonURL)
             metajson = json.loads(jsonurl.read())
             if 'aliyun' in metajson:
                 # Create the same output we have for bootimages
+                logging.debug(f"Recording Aliyun images for {buildid}")
                 releases[buildid] = {}
                 for entry in  metajson['aliyun']:
                     releases[buildid][entry['name']] = {'image':entry['id']}
@@ -124,10 +127,12 @@ def tag_image(region_id, image_id, tag_key=None, tag_value=None):
     if tag_value is None:
         tag_value = "false"
 
+    # TagResourceRequest() is idempotent, so we can just call it blindly without
+    # checking if the tag=value is already there
     client = create_client(region_id)
     tag_request = TagResourcesRequest()
     tag_request.set_ResourceType("image")
-    tag_request.set_ResourceId(image_id)
+    tag_request.set_ResourceIds([image_id])
     tag_request.set_protocol_type('https')
     tag_request.set_Tags([
         {
@@ -178,12 +183,21 @@ def get_image_info(region_id, image_id):
         return
     return json.loads(describe_resp.decode("utf-8"))
 
+
 # Utility function to mark an image public/private
 #
 # Takes region_id str, image_id str, public boolean
 #
 # Returns a JSON doc of the response from the API
 def change_visibility(region_id, image_id, public=False):
+    # changing IsPublic via ModifyImageSharePermissionRequest is not idempotent,
+    # so we have to check to see if the value is already set properly
+    image_info = get_image_info(region_id, image_id)
+    if image_info['Images']['Image'][0]['IsPublic'] == public:
+        logging.info(f"{image_id} is already marked IsPublic={public}")
+        # return empty JSON doc
+        return json.dumps("{}")
+
     client = create_client(region_id)
     modify_req = ModifyImageSharePermissionRequest()
     modify_req.set_ImageId(image_id)
@@ -198,6 +212,7 @@ def change_visibility(region_id, image_id, public=False):
         sys.exit(1)
 
     return json.loads(modify_resp.decode("utf-8"))
+
 
 # Deletes an image from the cloud. Can optionally confirm that the image was not
 # tagged with a key:value
@@ -234,7 +249,6 @@ def delete_image(file_path, check_tag_key=None, check_tag_value=None):
     return json.loads(delete_resp.decode("utf-8"))
 
 
-
 # Run the commands passed in dry mode or execute them, defaults to 'dru_run=True'
 #
 # Accepts to_run list, silent boolean, ignore_error boolean and dry_run boolean
@@ -260,12 +274,13 @@ def run_cmd(to_run, silent = False, ignore_error = False, dry_run=True):
         return False
     return True
 
+
 # Finds the Aliyun images included in a bootimage bump to openshift/installer
 # given an OCP version string
 #
 # Takes a release version (i.e. 4.10) as an argument
 #
-# Returns oa dict keyed off of build ID with values like {region_id: {release: build_id, image: image_id}}
+# Returns a dict keyed off of build ID with values like {region_id: {release: build_id, image: image_id}}
 def parse_openshift_installer(release):
     tmpdir = tempfile.mkdtemp()
     rhcos_json_path = 'data/data/coreos/rhcos.json'
@@ -301,16 +316,75 @@ def main():
     parser.add_argument('release', help="OCP release to operate on")
     parser.add_argument('--dry-run', help="Just print what would happen", action='store_true')
     parser.add_argument('--debug', '-d', help="Enable debug logging", action='store_true')
+    parser.add_argument('--filename', help="Path to file where bootimage data can be recorded; will allow for faster execution if script is run multiple times", default="deleted_images.json")
     args = parser.parse_args()
 
     if args.debug:
         logging.basicConfig(level=logging.DEBUG)
 
+    if args.filename:
+        deleted_images_filename = args.filename
+
     ### testing functions
-    #bootimages = parse_openshift_installer(args.release)
-    #print(bootimages)
-    #releases = (parse_release(args.release))
-    #images = get_images_not_tagged(bootimages)
+    # get aliyun images in the installer
+    bootimages = parse_openshift_installer(args.release)
+
+    # get builds with aliyun uploads from a builds.json
+    aliyun_releases = parse_release(args.release)
+
+    # preload images that should be deleted
+    deleted_images_json = {}
+    if os.path.exists(deleted_images_filename):
+        logging.debug("Found file")
+        with open(deleted_images_filename, 'r') as f:
+            deleted_images_json = json.load(f)
+
+    # find the builds from builds.json that are not in bootimages
+    for buildid in aliyun_releases.keys():
+        if buildid in bootimages:
+            print(f"Build ID {buildid} in bootimage metadata; tagging with bootimage=true")
+            for region in aliyun_releases[buildid]:
+                # TODO: uncomment this when we want to go live
+                #tag_image(region, image_id, tag_key="bootimage", tag_value="true")
+                pass
+        else:
+            if buildid in deleted_images_json:
+                logging.info(f"Found {buildid} in {deleted_images_filename}; skipping tagging")
+                continue
+            print(f"Build ID {buildid} not in bootimage metadata; tagging with bootimage=false")
+            image_list = []
+            for region in aliyun_releases[buildid]:
+                image_id = aliyun_releases[buildid][region]['image']
+                # TODO: uncomment this when we want to go live
+                #tag_image(region, image_id, tag_key="bootimage", tag_value="false")
+                image_list.append({"region": region, "image": image_id, "deleted": False})
+            deleted_images_json[buildid] = image_list
+
+    # delete the images that have been marked bootimage=false
+    #
+    # go through all the build ids
+    for buildid in deleted_images_json:
+        # enumerate the list of regions/images
+        for pos, item in enumerate(deleted_images_json[buildid]):
+            region = item['region']
+            image = item['image']
+            # if the image hasn't been marked deleted, remove it, and then update
+            # the 'deleted' key to True
+            if not item["deleted"]:
+                logging.warning(f"Deleting {image} in {region}")
+                # TODO: uncomment these when we want to go live
+                # we have to mark the image private before deleting it
+                #change_visibility(region, image, public=False)
+                #delete_image(region, image)
+                deleted_images_json[buildid][pos]["deleted"] = True
+            else:
+                logging.debug(f"{image} in {region} already marked as deleted")
+
+    with open(deleted_images_filename, 'w') as f:
+        json.dump(deleted_images_json, f)
+
+
+
     #tag_image(region_id="us-east-1", image_id="m-0xi47nhv1zat67he9n4j")
     #desc_resp = get_image_info("us-west-1", "m-rj947nhv1zas8vulsa3p")
     #delete_image("us-west-1", "m-rj947nhv1zas8vulsa3p")
@@ -318,6 +392,8 @@ def main():
     #print(desc_resp)
     #images = tag_image_and_return_list(images)
     #delete_image(images)
+
+
 
 
 if __name__ == "__main__":
