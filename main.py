@@ -22,6 +22,7 @@ from aliyunsdkcore.acs_exception.exceptions import ClientException
 from aliyunsdkcore.acs_exception.exceptions import ServerException
 from aliyunsdkecs.request.v20140526.DeleteImageRequest import DeleteImageRequest
 from aliyunsdkecs.request.v20140526.DescribeImagesRequest import DescribeImagesRequest
+from aliyunsdkecs.request.v20140526.ModifyImageSharePermissionRequest import ModifyImageSharePermissionRequest
 from aliyunsdkecs.request.v20140526.TagResourcesRequest import TagResourcesRequest
 
 
@@ -161,6 +162,27 @@ def get_image_info(region_id, image_id):
     return json.loads(describe_resp.decode("utf-8"))
 
 
+# Utility function to mark an image public/private
+#
+# Takes region_id str, image_id str, public boolean
+#
+# Returns a JSON doc of the response from the API
+def change_visibility(region_id, image_id, public=False):
+    client = create_client(region_id)
+    modify_req = ModifyImageSharePermissionRequest()
+    modify_req.set_ImageId(image_id)
+    modify_req.set_IsPublic(public)
+    modify_req.set_protocol_type('https')
+
+    logging.debug(f"Marking {image_id} in {region_id} with IsPublic={public}")
+    try:
+        modify_resp = client.do_action_with_exception(modify_req)
+    except (ClientException, ServerException) as e:
+        logging.error("Unable to mark {} as public={}: {}".format(image_id, public, e))
+        sys.exit(1)
+
+    return json.loads(modify_resp.decode("utf-8"))
+
 # Deletes an image from the cloud. Can optionally confirm that the image was not
 # tagged with a key:value
 #
@@ -251,6 +273,7 @@ def main():
     #desc_resp = get_image_info("us-west-1", "m-rj947nhv1zas8vulsa3p")
     #print(desc_resp)
     #delete_image("us-west-1", "m-rj947nhv1zas8vulsa3p")
+    #change_visibility("us-east-1", "m-0xi7bf33rrl9dtvr3zbp", True)
 
 
 if __name__ == "__main__":
