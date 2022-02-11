@@ -135,14 +135,29 @@ def tag_image(region_id, image_id, tag_key=None, tag_value=None):
             "Value": tag_value
         }
     ])
-
-    try:
-        tag_resp = client.do_action_with_exception(tag_request)
-    except (ClientException, ServerException) as e:
-        logging.error("Unable to tag {}: {}".format(image_id, e))
-        sys.exit(1)
-
+    tag_resp = run_cmd([client, tag_request])
+    if tag_resp == 'dry_run':
+        return
     return json.loads(tag_resp.decode("utf-8"))
+
+# Tag an image with `key:value`; defaults to `bootimage:false` and
+# return a json file with region_id and image_id
+# Accepts image_list list as argument; optionally a tag key and
+# tag value
+#
+# Returns a JSON file path
+def tag_image_and_return_list(image_list, tag_key=None, tag_value=None):
+    images = []
+    tmpdir = tempfile.mkdtemp()
+    file_path = os.path.join(tmpdir, 'tagged_images.json')
+
+    for image in image_list:
+        tag_image(image['region_id'], image['image_id'], tag_key, tag_value)
+        images.append(image)
+    with open(file_path, 'a') as f:
+        f.write(json.dumps(images))
+
+    return file_path
 
 
 # Utility function to get info about an image
@@ -157,10 +172,11 @@ def get_image_info(region_id, image_id):
     describe_req.set_protocol_type('https')
 
     logging.debug(f"Sending DescribeImages request for {image_id}")
-    describe_resp = client.do_action_with_exception(describe_req)
 
+    describe_resp = run_cmd([client, describe_req])
+    if describe_resp == 'dry_run':
+        return
     return json.loads(describe_resp.decode("utf-8"))
-
 
 # Utility function to mark an image public/private
 #
@@ -190,15 +206,20 @@ def change_visibility(region_id, image_id, public=False):
 # and value to check for.
 #
 # Returns a JSON doc of the response from the API
-def delete_image(region_id, image_id, check_tag_key=None, check_tag_value=None):
-    if check_tag_key is not None and check_tag_value is not None:
-        logging.debug(f"Checking for {check_tag_key}={check_tag_value} before deleting {image_id}")
-        image_info = get_image_info(region_id, image_id)
-        for tag in image_info['Images']['Image'][0]['Tags']['Tag']:
-            if tag['TagKey'] == check_tag_key and tag['TagValue'] == check_tag_value:
-                logging.warning(f"{image_id} is tagged with {check_tag_key}={check_tag_value}; will not delete")
-                # return empty JSON doc
-                return json.load("{}")
+def delete_image(file_path, check_tag_key=None, check_tag_value=None):
+    f = open(file_path)
+    images = json.load(f)
+    for image in images:
+        image_id = image['image_id']
+        region_id = image['region_id']
+        if check_tag_key is not None and check_tag_value is not None:
+            logging.debug(f"Checking for {check_tag_key}={check_tag_value} before deleting {image_id}")
+            image_info = get_image_info(region_id, image_id)
+            for tag in image_info['Images']['Image'][0]['Tags']['Tag']:
+                if tag['TagKey'] == check_tag_key and tag['TagValue'] == check_tag_value:
+                    logging.warning(f"{image_id} is tagged with {check_tag_key}={check_tag_value}; will not delete")
+                    # return empty JSON doc
+                    return json.load("{}")
 
     logging.debug(f"Going to delete {image_id} in {region_id}")
     client = create_client(region_id)
@@ -207,15 +228,37 @@ def delete_image(region_id, image_id, check_tag_key=None, check_tag_value=None):
     delete_req.set_protocol_type('https')
 
     logging.warning(f"Deleting {image_id} in {region_id}")
-    # TODO: actual calls to do the deletion are commented out until we have
-    # better support for `--dry-run`
-    # try:
-    #     delete_resp = client.do_action_with_exception(delete_req)
-    # except (ClientException, ServerException) as e:
-    #     logging.error("Unable to delete {}: {}".format(image_id, e))
-    #     sys.exit(1)
-    # return json.loads(delete_resp.decode("utf-8"))
+    delete_req = run_cmd([client, delete_req])
+    if delete_req  == 'dry_run':
+        return
+    return json.loads(delete_resp.decode("utf-8"))
 
+
+
+# Run the commands passed in dry mode or execute them, defaults to 'dru_run=True'
+#
+# Accepts to_run list, silent boolean, ignore_error boolean and dry_run boolean
+# as arguments;
+#
+# Returns `'dry_run` str or result of the the passed command
+def run_cmd(to_run, silent = False, ignore_error = False, dry_run=True):
+    try:
+        if dry_run:
+            print("Running --- Dry Run ----")
+            print("Action to perfome:%s" % (to_run[1]._action_name))
+            print("Parameters:%s" % (to_run[1]._params))
+            return 'dry_run'
+        else:
+            client = to_run[0]
+            params = to_run[1]
+            result = client.do_action_with_exception(params)
+            return result
+    except e:
+        if not ignore_error:
+            print("An exception has occurred: %s" % e)
+            sys.exit(1)
+        return False
+    return True
 
 # Finds the Aliyun images included in a bootimage bump to openshift/installer
 # given an OCP version string
@@ -263,17 +306,18 @@ def main():
     if args.debug:
         logging.basicConfig(level=logging.DEBUG)
 
-
     ### testing functions
     #bootimages = parse_openshift_installer(args.release)
     #print(bootimages)
     #releases = (parse_release(args.release))
-    #images = get_images_not_tagged(releases)
+    #images = get_images_not_tagged(bootimages)
     #tag_image(region_id="us-east-1", image_id="m-0xi47nhv1zat67he9n4j")
     #desc_resp = get_image_info("us-west-1", "m-rj947nhv1zas8vulsa3p")
-    #print(desc_resp)
     #delete_image("us-west-1", "m-rj947nhv1zas8vulsa3p")
     #change_visibility("us-east-1", "m-0xi7bf33rrl9dtvr3zbp", True)
+    #print(desc_resp)
+    #images = tag_image_and_return_list(images)
+    #delete_image(images)
 
 
 if __name__ == "__main__":
