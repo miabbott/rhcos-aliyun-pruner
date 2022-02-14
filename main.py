@@ -64,12 +64,9 @@ def get_images_not_tagged(bootimages):
             request.set_protocol_type('https')
             client = create_client(region)
             logging.debug(f"Getting image info for {imageid} in {region}")
-            try:
-                response = client.do_action_with_exception(request)
-            except (ClientException, ServerException) as e:
-                logging.error("Unable to describe {}: {}".format(imageid, e))
-                sys.exit(1)
-
+            response = run_cmd([client, request])
+            if response == 'dry_run':
+                return
             response = json.loads(response.decode("utf-8"))
             for image in response['Images']['Image']:
                 tagfound = False
@@ -205,12 +202,9 @@ def change_visibility(region_id, image_id, public=False):
     modify_req.set_protocol_type('https')
 
     logging.debug(f"Marking {image_id} in {region_id} with IsPublic={public}")
-    try:
-        modify_resp = client.do_action_with_exception(modify_req)
-    except (ClientException, ServerException) as e:
-        logging.error("Unable to mark {} as public={}: {}".format(image_id, public, e))
-        sys.exit(1)
-
+    modify_resp = run_cmd([client, modify_req])
+    if modify_req == 'dry_run':
+        return
     return json.loads(modify_resp.decode("utf-8"))
 
 
@@ -255,21 +249,22 @@ def delete_image(file_path, check_tag_key=None, check_tag_value=None):
 # as arguments;
 #
 # Returns `'dry_run` str or result of the the passed command
-def run_cmd(to_run, silent = False, ignore_error = False, dry_run=True):
+def run_cmd(to_run, silent = False, ignore_error = False):
+    action = to_run[1]._action_name
+    params = to_run[1]._params
+    client = to_run[0]
     try:
-        if dry_run:
+        if DRY_RUN:
             print("Running --- Dry Run ----")
-            print("Action to perfome:%s" % (to_run[1]._action_name))
-            print("Parameters:%s" % (to_run[1]._params))
+            print("Action to perfome:%s" % (action))
+            print("Parameters:%s" % (params))
             return 'dry_run'
         else:
-            client = to_run[0]
-            params = to_run[1]
             result = client.do_action_with_exception(params)
             return result
-    except e:
+    except (ClientException, ServerException) as e:
         if not ignore_error:
-            print("An exception has occurred: %s" % e)
+            logging.error("Unable to perfom action:{} with: {}. {}".format(action, params, e))
             sys.exit(1)
         return False
     return True
@@ -319,6 +314,11 @@ def main():
     parser.add_argument('--filename', help="Path to file where bootimage data can be recorded; will allow for faster execution if script is run multiple times", default="deleted_images.json")
     args = parser.parse_args()
 
+    global DRY_RUN
+    DRY_RUN = False
+
+    if args.dry_run:
+        DRY_RUN = True
     if args.debug:
         logging.basicConfig(level=logging.DEBUG)
 
@@ -382,8 +382,6 @@ def main():
 
     with open(deleted_images_filename, 'w') as f:
         json.dump(deleted_images_json, f)
-
-
 
     #tag_image(region_id="us-east-1", image_id="m-0xi47nhv1zat67he9n4j")
     #desc_resp = get_image_info("us-west-1", "m-rj947nhv1zas8vulsa3p")
