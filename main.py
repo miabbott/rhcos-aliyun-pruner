@@ -37,7 +37,6 @@ FIRSTRELEASE['ppc64le'] = 0
 FIRSTRELEASE['s390x'] = 0
 FIRSTRELEASE['x86_64'] = {'4.10': '410842021120118210', '4.11': '411842022020718390'}
 
-
 # Creates an Aliyun client for a region
 #
 # Takes a region_id str as argument
@@ -47,7 +46,6 @@ def create_client(region_id):
     client = AcsClient(region_id=region_id)
     return client
 
-
 # Utility function to get a list of images that are not tagged with "bootimage"
 #
 # Takes a dict from parse_openshift_installer() as an argument
@@ -55,7 +53,7 @@ def create_client(region_id):
 # Returns a list of {region_id:image_id} pairs
 def get_images_not_tagged(bootimages):
     request = DescribeImagesRequest()
-    nottagged = []
+    nottagged = {}
 
     for bootimage in bootimages:
         for region in bootimages[bootimage]:
@@ -76,25 +74,30 @@ def get_images_not_tagged(bootimages):
                         tagfound = True
                         break
                 if tagfound is False:
-                    nottagged.append({'region_id': region, 'image_id': image['ImageId']})
+                    if bootimage not in nottagged.keys():
+                       nottagged[bootimage] = []
+                    nottagged[bootimage].append({'region_id': region, 'image_id': image['ImageId']})
     return nottagged
 
 
 # Get all images in builds.json and check the build meta.json to see
 # if we had an aliyun artifact created
 #
-# Takes a release (i.e. 4.10) as the input
+# Takes a release (i.e. 4.10) and the json dict as the input
 #
 # Returns a dict keyed off of build ID that contains {region_id: image_id} pairs
-def parse_release(release):
+def parse_release(release, json_file):
     releases = {}
     logging.debug(f"Getting all builds for RHCOS {release}")
     jsonurl = urlopen("%srhcos-%s/builds.json" % (REDIRECTOR_URL, release))
     buildjson = json.loads(jsonurl.read())
 
     for build in (buildjson['builds']):
-        arch = build['arches'][0]
         buildid = build['id']
+        if buildid in json_file.keys():
+            logging.debug(f"Build ID: {buildid} found in file")
+            continue
+        arch = build['arches'][0]
         buildid_int = int((buildid.replace('.','')).replace('-',''))
         # Look only for builds after the aliyun inclusion
         # TODO: we can improve it keeping a record for the build we already checked
@@ -148,18 +151,29 @@ def tag_image(region_id, image_id, tag_key=None, tag_value=None):
 # tag value
 #
 # Returns a JSON file path
-def tag_image_and_return_list(image_list, tag_key=None, tag_value=None):
-    images = []
-    tmpdir = tempfile.mkdtemp()
-    file_path = os.path.join(tmpdir, 'tagged_images.json')
+def tag_image_and_save_to_file(image_list, file_path, tag_key=None, tag_value=None):
+    new_data = {}
+    for buildid in image_list.keys():
+        for region in image_list[buildid]:
+            if buildid not in new_data:
+                new_data[buildid] = []
+            region_id = region['region_id']
+            image_id = region['image_id']
+            # TODO: uncomment these when we want to go live
+            #tag_image(image['region_id'], image['image_id'], tag_key, tag_value)
+            new_data[buildid].append({ "region": region_id, "image": image_id, "deleted": False})
 
-    for image in image_list:
-        tag_image(image['region_id'], image['image_id'], tag_key, tag_value)
-        images.append(image)
-    with open(file_path, 'a') as f:
-        f.write(json.dumps(images))
+    if os.path.exists(file_path):
+        with open(file_path, 'r+') as f:
+            data = json.load(f)
+            data.update(new_data)
+            f.seek(0)
+            f.write(json.dumps(data))
+    else:
+         with open(file_path, 'w') as f:
+            f.write(json.dumps(new_data))
 
-    return file_path
+    return
 
 
 # Utility function to get info about an image
@@ -216,31 +230,56 @@ def change_visibility(region_id, image_id, public=False):
 #
 # Returns a JSON doc of the response from the API
 def delete_image(file_path, check_tag_key=None, check_tag_value=None):
-    f = open(file_path)
-    images = json.load(f)
-    for image in images:
-        image_id = image['image_id']
-        region_id = image['region_id']
-        if check_tag_key is not None and check_tag_value is not None:
-            logging.debug(f"Checking for {check_tag_key}={check_tag_value} before deleting {image_id}")
-            image_info = get_image_info(region_id, image_id)
-            for tag in image_info['Images']['Image'][0]['Tags']['Tag']:
-                if tag['TagKey'] == check_tag_key and tag['TagValue'] == check_tag_value:
-                    logging.warning(f"{image_id} is tagged with {check_tag_key}={check_tag_value}; will not delete")
-                    # return empty JSON doc
-                    return json.load("{}")
+    if check_tag_key is None:
+        check_tag_key = "bootimage"
+    if check_tag_value is None:
+        check_tag_value = "true"
 
-    logging.debug(f"Going to delete {image_id} in {region_id}")
-    client = create_client(region_id)
-    delete_req = DeleteImageRequest()
-    delete_req.set_ImageId(image_id)
-    delete_req.set_protocol_type('https')
+    if os.path.exists(file_path):
+        logging.debug("Found file")
+        with open(file_path, 'r') as f:
+            deleted_images_json = json.load(f)
+    for buildid in deleted_images_json.keys():
+        # enumerate the list of regions/images
+        for pos, item in enumerate(deleted_images_json[buildid]):
+            region_id = item['region']
+            image_id = item['image']
+            # if the image hasn't been marked deleted, remove it, and then update
+            # the 'deleted' key to True
+            if not item["deleted"]:
+                logging.warning(f"Deleting {image_id} in {region_id}")
+                # TODO: uncomment these when we want to go live
+                # we have to mark the image private before deleting it
 
-    logging.warning(f"Deleting {image_id} in {region_id}")
-    delete_req = run_cmd([client, delete_req])
-    if delete_req  == 'dry_run':
-        return
-    return json.loads(delete_resp.decode("utf-8"))
+                if check_tag_key is not None and check_tag_value is not None:
+                    logging.debug(f"Checking for {check_tag_key}={check_tag_value} before deleting {image_id}")
+                    image_info = get_image_info(region_id, image_id)
+                    for tag in image_info['Images']['Image'][0]['Tags']['Tag']:
+                        if tag['TagKey'] == check_tag_key and tag['TagValue'] == check_tag_value:
+                            logging.warning(f"{image_id} is tagged with {check_tag_key}={check_tag_value}; will not delete")
+                            # return empty JSON doc
+                            return json.load("{}")
+                        if image_info['Images']['Image'][0]['IsPublic'] is True:
+                             pass
+                             #change_visibility(region_id image_id, public=False)
+
+                        logging.debug(f"Going to delete {image_id} in {region_id}")
+                        client = create_client(region_id)
+                        delete_req = DeleteImageRequest()
+                        delete_req.set_ImageId(image_id)
+                        delete_req.set_protocol_type('https')
+
+                        logging.warning(f"---Deleting {image_id} in {region_id}")
+                        #delete_req = run_cmd([client, delete_req])
+                        #if delete_req  == 'dry_run':
+                        #    return
+                        deleted_images_json[buildid][pos]["deleted"] = True
+            else:
+                logging.debug(f"{image_id} in {region_id} already marked as deleted")
+
+        with open(file_path, 'w') as f:
+            json.dump(deleted_images_json, f)
+        return # json.loads(delete_resp.decode("utf-8"))
 
 
 # Run the commands passed in dry mode or execute them, defaults to 'dru_run=True'
@@ -249,10 +288,11 @@ def delete_image(file_path, check_tag_key=None, check_tag_value=None):
 # as arguments;
 #
 # Returns `'dry_run` str or result of the the passed command
-def run_cmd(to_run, silent = False, ignore_error = False):
-    action = to_run[1]._action_name
-    params = to_run[1]._params
-    client = to_run[0]
+def run_cmd(command, silent = False, ignore_error = False):
+    action = command[1]._action_name
+    params = command[1]._params
+    request = command[1]
+    client = command[0]
     try:
         if DRY_RUN:
             print("Running --- Dry Run ----")
@@ -260,7 +300,7 @@ def run_cmd(to_run, silent = False, ignore_error = False):
             print("Parameters:%s" % (params))
             return 'dry_run'
         else:
-            result = client.do_action_with_exception(params)
+            result = client.do_action_with_exception(request)
             return result
     except (ClientException, ServerException) as e:
         if not ignore_error:
@@ -316,6 +356,8 @@ def main():
 
     global DRY_RUN
     DRY_RUN = False
+    image_list = {}
+    deleted_images_json = {}
 
     if args.dry_run:
         DRY_RUN = True
@@ -325,74 +367,41 @@ def main():
     if args.filename:
         deleted_images_filename = args.filename
 
-    ### testing functions
-    # get aliyun images in the installer
-    bootimages = parse_openshift_installer(args.release)
-
-    # get builds with aliyun uploads from a builds.json
-    aliyun_releases = parse_release(args.release)
-
     # preload images that should be deleted
-    deleted_images_json = {}
     if os.path.exists(deleted_images_filename):
-        logging.debug("Found file")
+        logging.debug(f"Found file: {deleted_images_filename}")
         with open(deleted_images_filename, 'r') as f:
             deleted_images_json = json.load(f)
+
+    # get aliyun images in the installer
+    bootimages = parse_openshift_installer(args.release)
+    bootimages = get_images_not_tagged(bootimages)
+    # get builds with aliyun uploads from a builds.json
+    aliyun_releases = parse_release(args.release, deleted_images_json)
+    aliyun_releases = get_images_not_tagged(aliyun_releases)
 
     # find the builds from builds.json that are not in bootimages
     for buildid in aliyun_releases.keys():
         if buildid in bootimages:
             print(f"Build ID {buildid} in bootimage metadata; tagging with bootimage=true")
             for region in aliyun_releases[buildid]:
+                image_id =region['image_id']
+                region = region['region_id']
                 # TODO: uncomment this when we want to go live
                 #tag_image(region, image_id, tag_key="bootimage", tag_value="true")
                 pass
+        elif buildid in builds:
+            logging.info(f"Found {buildid} in {deleted_images_filename}; skipping tagging")
+            continue
         else:
-            if buildid in deleted_images_json:
-                logging.info(f"Found {buildid} in {deleted_images_filename}; skipping tagging")
-                continue
             print(f"Build ID {buildid} not in bootimage metadata; tagging with bootimage=false")
-            image_list = []
+            if buildid not in image_list:
+                image_list[buildid] = []
             for region in aliyun_releases[buildid]:
-                image_id = aliyun_releases[buildid][region]['image']
-                # TODO: uncomment this when we want to go live
-                #tag_image(region, image_id, tag_key="bootimage", tag_value="false")
-                image_list.append({"region": region, "image": image_id, "deleted": False})
-            deleted_images_json[buildid] = image_list
+                image_list[buildid].append(region)
 
-    # delete the images that have been marked bootimage=false
-    #
-    # go through all the build ids
-    for buildid in deleted_images_json:
-        # enumerate the list of regions/images
-        for pos, item in enumerate(deleted_images_json[buildid]):
-            region = item['region']
-            image = item['image']
-            # if the image hasn't been marked deleted, remove it, and then update
-            # the 'deleted' key to True
-            if not item["deleted"]:
-                logging.warning(f"Deleting {image} in {region}")
-                # TODO: uncomment these when we want to go live
-                # we have to mark the image private before deleting it
-                #change_visibility(region, image, public=False)
-                #delete_image(region, image)
-                deleted_images_json[buildid][pos]["deleted"] = True
-            else:
-                logging.debug(f"{image} in {region} already marked as deleted")
-
-    with open(deleted_images_filename, 'w') as f:
-        json.dump(deleted_images_json, f)
-
-    #tag_image(region_id="us-east-1", image_id="m-0xi47nhv1zat67he9n4j")
-    #desc_resp = get_image_info("us-west-1", "m-rj947nhv1zas8vulsa3p")
-    #delete_image("us-west-1", "m-rj947nhv1zas8vulsa3p")
-    #change_visibility("us-east-1", "m-0xi7bf33rrl9dtvr3zbp", True)
-    #print(desc_resp)
-    #images = tag_image_and_return_list(images)
-    #delete_image(images)
-
-
-
+    #tag_image_and_save_to_file(image_list, deleted_images_filename)
+    #delete_image(deleted_images_filename)
 
 if __name__ == "__main__":
     main()
