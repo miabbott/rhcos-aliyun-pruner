@@ -383,23 +383,31 @@ def main():
         logging.error("Didn't find any images to tag or delete")
         sys.exit(1)
 
-    # find the builds from builds.json that are not in bootimages
+    # find the builds from builds.json that are not in bootimages and generate
+    # a dict to operate on later
     for buildid in aliyun_releases:
+        logging.info(f"Checking if {buildid} was used in openshift/installer")
+        if buildid not in image_list:
+            image_list[buildid] = []
+
+        if buildid in deleted_images_json:
+            logging.debug(f"Found {buildid} in {deleted_images_filename}; skipping tagging")
+            continue
+
         if buildid in bootimages:
+            logging.debug(f"Found {buildid} in openshift/installer, tagging images with bootimage=true")
             for region in aliyun_releases[buildid]:
                 image_id =region['image_id']
                 region = region['region_id']
                 tag_image(region, image_id, tag_key="bootimage", tag_value="true")
-        elif buildid in deleted_images_json:
-            logging.debug(f"Found {buildid} in {deleted_images_filename}; skipping tagging")
-            continue
         else:
-            if buildid not in image_list:
-                image_list[buildid] = []
             # region here is a '{region_id: image_id}' dict
             for region in aliyun_releases[buildid]:
                 image_list[buildid].append(region)
 
+    # With a dict of buildids that have all the regions/imageids that are not
+    # in the openshift/installer data, we can tag the images with bootimage=false
+    # and then delete those images
     tag_image_and_save_to_file(image_list, deleted_images_filename)
     delete_images(deleted_images_filename)
 
