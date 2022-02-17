@@ -55,20 +55,19 @@ def create_client(region_id):
 #
 # Returns a list of {region_id:image_id} pairs
 def get_images_not_tagged(bootimages):
-    request = DescribeImagesRequest()
     nottagged = {}
 
+    count = 0
     for bootimage in bootimages:
+        logging.info(f"Searching for untagged images in build {bootimage}")
+        if count > 4:
+            logging.warning("Short circuit the get_images_not_tagged loop")
+            break
+        count = count + 1
         for region in bootimages[bootimage]:
             imageid = bootimages[bootimage][region]['image']
-            request.set_ImageId(imageid)
-            request.set_protocol_type('https')
-            client = create_client(region)
             logging.debug(f"Getting image info for {imageid} in {region}")
-            response = run_cmd([client, request])
-            if response == 'dry_run':
-                return
-            response = json.loads(response.decode("utf-8"))
+            response =get_image_info(region, imageid)
             for image in response['Images']['Image']:
                 tagfound = False
                 for tag in image['Tags']['Tag']:
@@ -201,9 +200,12 @@ def get_image_info(region_id, image_id):
 
     logging.debug(f"Sending DescribeImages request for {image_id}")
 
-    describe_resp = run_cmd([client, describe_req])
-    if describe_resp == 'dry_run':
-        return
+    try:
+        describe_resp = client.do_action_with_exception(describe_req)
+    except (ClientException, ServerException) as e:
+        logging.error("Unable to describe {}: {}".format(image_id, e))
+        sys.exit(1)
+
     return json.loads(describe_resp.decode("utf-8"))
 
 
@@ -250,7 +252,7 @@ def delete_images(file_path):
         sys.exit(1)
 
     for buildid in deleted_images_json.keys():
-        logging.debug(f"Working through images/regions for {buildid}...")
+        logging.info(f"Working through images/regions for {buildid} to delete...")
         # enumerate the list of regions/images
         for pos, item in enumerate(deleted_images_json[buildid]):
             region_id = item['region']
@@ -364,6 +366,7 @@ def main():
     if args.dry_run:
         DRY_RUN = True
 
+    logging.basicConfig(level=logging.INFO)
     if args.debug:
         logging.basicConfig(level=logging.DEBUG)
 
@@ -377,15 +380,26 @@ def main():
             deleted_images_json = json.load(f)
 
     # get aliyun images in the installer
+    logging.warning("Parsing the installer code")
     bootimages = parse_openshift_installer(args.release)
+    logging.warning("Getting untagged images from installer data")
     bootimages = get_images_not_tagged(bootimages)
 
     # get builds with aliyun uploads from a builds.json
+    logging.warning("Finding builds with Aliyun uploads from builds.json")
     aliyun_releases = parse_release(args.release, deleted_images_json)
+    logging.warning("Finding untagged images in all Aliyun uploads")
     aliyun_releases = get_images_not_tagged(aliyun_releases)
+    print(aliyun_releases)
 
     # find the builds from builds.json that are not in bootimages
-    for buildid in aliyun_releases.keys():
+    count = 0
+    for buildid in aliyun_releases:
+        logging.info(f"Checking Aliyun uploads in {buildid}...")
+        if count > 10:
+            logging.warning("Short circuit the main loop...")
+            break
+        count = count + 1
         if buildid in bootimages:
             print(f"Build ID {buildid} in bootimage metadata; tagging with bootimage=true")
             for region in aliyun_releases[buildid]:
@@ -406,9 +420,9 @@ def main():
             for region in aliyun_releases[buildid]:
                 image_list[buildid].append(region)
 
-        # TODO: uncomment this when we want to go live
-        #tag_image_and_save_to_file(image_list, deleted_images_filename)
-        #delete_images(deleted_images_filename)
+    # TODO: uncomment this when we want to go live
+    tag_image_and_save_to_file(image_list, deleted_images_filename)
+    #delete_images(deleted_images_filename)
 
 if __name__ == "__main__":
     main()
