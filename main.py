@@ -8,7 +8,6 @@
 #  - https://api.aliyun.com/#/?product=Ecs
 
 import argparse
-import git
 import json
 import logging
 import os
@@ -16,6 +15,8 @@ import shutil
 import sys
 import tempfile
 from urllib.request import urlopen
+
+import git
 
 from aliyunsdkcore.client import AcsClient
 from aliyunsdkcore.acs_exception.exceptions import ClientException
@@ -77,7 +78,7 @@ def get_images_not_tagged(bootimages):
                         break
                 if tagfound is False:
                     if bootimage not in nottagged.keys():
-                       nottagged[bootimage] = []
+                        nottagged[bootimage] = []
                     nottagged[bootimage].append({'region_id': region, 'image_id': image['ImageId']})
     return nottagged
 
@@ -249,6 +250,7 @@ def delete_images(file_path):
         sys.exit(1)
 
     for buildid in deleted_images_json.keys():
+        logging.debug(f"Working through images/regions for {buildid}...")
         # enumerate the list of regions/images
         for pos, item in enumerate(deleted_images_json[buildid]):
             region_id = item['region']
@@ -262,7 +264,6 @@ def delete_images(file_path):
                     # TODO: uncomment this when we want to go live
                     #change_visibility(region_id image_id, public=False)
                     logging.debug(f"Would have marked {image_id} in {region_id} as private")
-                    pass
 
                 client = create_client(region_id)
                 delete_req = DeleteImageRequest()
@@ -307,7 +308,6 @@ def run_cmd(command, silent = False, ignore_error = False):
             logging.error("Unable to perfom action:{} with: {}. {}".format(action, params, e))
             sys.exit(1)
         return False
-    return True
 
 
 # Finds the Aliyun images included in a bootimage bump to openshift/installer
@@ -356,6 +356,10 @@ def main():
 
     image_list = {}
     deleted_images_json = {}
+
+    if 'ALIYUN_ACCESS_KEY_ID' not in os.environ or 'ALIYUN_ACCESS_KEY_SECRET' not in os.environ:
+        logging.error('Must have ALIYUN_ACCESS_KEY_ID and ALIYUN_ACCESS_KEY_SECRET env variables set')
+        sys.exit(1)
 
     if args.dry_run:
         DRY_RUN = True
