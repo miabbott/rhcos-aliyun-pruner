@@ -1,6 +1,5 @@
 FROM docker.io/library/python:3
-WORKDIR /usr/src/app
-COPY requirements.txt ./
-RUN pip install --no-cache-dir -r requirements.txt
-COPY . .
-ENTRYPOINT ["python", "./main.py"]
+COPY "requirements.txt" "/usr/src/app/"
+RUN pip install --no-cache-dir -r /usr/src/app/requirements.txt
+COPY "main.py" "/usr/src/app/"
+ENTRYPOINT ["python", "/usr/src/app/main.py"]

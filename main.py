@@ -339,9 +339,17 @@ def main():
     parser.add_argument('release', help="OCP release to operate on")
     parser.add_argument('--dry-run', help="Just print what would happen", action='store_true')
     parser.add_argument('--debug', '-d', help="Enable debug logging", action='store_true')
-    parser.add_argument('--filename', help="Path to file where bootimage data can be recorded; will allow for faster execution if script is run multiple times", default="deleted_images.json")
-    parser.add_argument('--log-to-file', help="Filename to record all log output to", default="aliyun-pruner.log")
+    parser.add_argument('--filename', help="Path to file where bootimage data can be recorded; will allow for faster execution if script is run multiple times")
+    parser.add_argument('--log-to-file', help="Filename to record all log output to")
     args = parser.parse_args()
+
+    deleted_images_filename = "deleted_images.json"
+    if args.filename is not None:
+        deleted_images_filename = args.filename
+
+    log_file_path = "aliyun_pruner.log"
+    if args.log_to_file is not None:
+        log_file_path = args.log_to_file
 
     log_level = logging.INFO
     if args.debug:
@@ -350,10 +358,14 @@ def main():
     logging.basicConfig(
         level=log_level,
         handlers=[
-            logging.FileHandler(args.log_to_file, encoding="utf-8"),
+            logging.FileHandler(log_file_path, encoding="utf-8"),
             logging.StreamHandler(sys.stdout)
         ]
     )
+
+    if args.release not in ['4.10', '4.11']:
+        logging.warning("Release not supported")
+        sys.exit(1)
 
     if 'ALIYUN_ACCESS_KEY_ID' not in os.environ or 'ALIYUN_ACCESS_KEY_SECRET' not in os.environ:
         logging.error('Must have ALIYUN_ACCESS_KEY_ID and ALIYUN_ACCESS_KEY_SECRET env variables set')
@@ -366,9 +378,6 @@ def main():
     DRY_RUN = False
     if args.dry_run:
         DRY_RUN = True
-
-    if args.filename:
-        deleted_images_filename = args.filename
 
     # preload images that should be deleted
     if os.path.exists(deleted_images_filename):
