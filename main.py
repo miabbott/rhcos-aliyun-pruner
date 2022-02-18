@@ -221,7 +221,7 @@ def change_visibility(region_id, image_id, public=False):
 
     logging.debug(f"Marking {image_id} in {region_id} with IsPublic={public}")
     modify_resp = run_cmd([client, modify_req])
-    if modify_req == 'dry_run':
+    if modify_resp == 'dry_run':
         return json.dumps('{}')
     return json.loads(modify_resp.decode("utf-8"))
 
@@ -340,23 +340,32 @@ def main():
     parser.add_argument('--dry-run', help="Just print what would happen", action='store_true')
     parser.add_argument('--debug', '-d', help="Enable debug logging", action='store_true')
     parser.add_argument('--filename', help="Path to file where bootimage data can be recorded; will allow for faster execution if script is run multiple times", default="deleted_images.json")
+    parser.add_argument('--log-to-file', help="Filename to record all log output to", default="aliyun-pruner.log")
     args = parser.parse_args()
 
-    image_list = {}
-    deleted_images_json = {}
+    log_level = logging.INFO
+    if args.debug:
+        log_level = logging.DEBUG
+
+    logging.basicConfig(
+        level=log_level,
+        handlers=[
+            logging.FileHandler(args.log_to_file, encoding="utf-8"),
+            logging.StreamHandler(sys.stdout)
+        ]
+    )
 
     if 'ALIYUN_ACCESS_KEY_ID' not in os.environ or 'ALIYUN_ACCESS_KEY_SECRET' not in os.environ:
         logging.error('Must have ALIYUN_ACCESS_KEY_ID and ALIYUN_ACCESS_KEY_SECRET env variables set')
         sys.exit(1)
 
+    image_list = {}
+    deleted_images_json = {}
+
     global DRY_RUN
     DRY_RUN = False
     if args.dry_run:
         DRY_RUN = True
-
-    logging.basicConfig(level=logging.INFO)
-    if args.debug:
-        logging.basicConfig(level=logging.DEBUG)
 
     if args.filename:
         deleted_images_filename = args.filename
