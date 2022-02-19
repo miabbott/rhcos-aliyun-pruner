@@ -267,8 +267,9 @@ def delete_images(file_path):
             else:
                 logging.debug(f"{image_id} in {region_id} already marked as deleted")
 
-        with open(file_path, 'w') as f:
-            json.dump(deleted_images_json, f)
+    # after iterating through all the build ids, write out the new data
+    with open(file_path, 'w') as f:
+        json.dump(deleted_images_json, f)
 
 
 # Run the commands passed in dry mode or execute them, defaults to 'dru_run=True'
